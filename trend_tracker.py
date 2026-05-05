@@ -39,6 +39,9 @@ class TrendResult:
     trend_strength: float | None = None
     is_above_sma20: bool = False
     is_shallow_pullback: bool = False
+    is_trend_strength_pass: bool = False
+    pullback_band: str = "unknown"
+    reason: str = ""
     is_opportunity: bool = False
     error: str = ""
 
@@ -98,7 +101,53 @@ def average(values: Iterable[float]) -> float:
     return sum(values) / len(values)
 
 
-def analyze_symbol(symbol: str, recent_high_days: int = 20) -> TrendResult:
+def pullback_band_label(pullback_pct: float, min_pullback_pct: float, max_pullback_pct: float) -> str:
+    if not finite_number(pullback_pct):
+        return "unknown"
+    if pullback_pct < min_pullback_pct:
+        return "too small"
+    if pullback_pct > max_pullback_pct:
+        return "too deep"
+    return "valid"
+
+
+def build_reason(result: TrendResult) -> str:
+    if result.error:
+        return result.error
+
+    pullback = format_pct(result.pullback_pct)
+    if result.is_opportunity:
+        return f"uptrend intact, shallow pullback {pullback}."
+
+    reasons = []
+    if not result.is_above_sma20:
+        reasons.append("below SMA20")
+    elif not result.is_trend_strength_pass:
+        reasons.append("trend strength below threshold")
+    else:
+        reasons.append("strong uptrend")
+
+    if result.pullback_band == "too small":
+        reasons.append(f"but pullback only {pullback}, too close to high")
+    elif result.pullback_band == "too deep":
+        reasons.append(f"pullback {pullback} is too deep")
+    elif result.pullback_band == "valid":
+        reasons.append(f"pullback {pullback} is valid")
+
+    if not result.is_above_sma20 and not result.is_trend_strength_pass:
+        reasons.append("trend is negative")
+
+    sentence = ", ".join(reasons).strip()
+    return sentence[:1].lower() + sentence[1:] + "." if sentence else "conditions not confirmed."
+
+
+def analyze_symbol(
+    symbol: str,
+    recent_high_days: int = 20,
+    min_pullback_pct: float = 1.0,
+    max_pullback_pct: float = 3.0,
+    min_trend_pct: float = 5.0,
+) -> TrendResult:
     try:
         bars = fetch_daily_bars(symbol)
     except RuntimeError as exc:
@@ -117,8 +166,10 @@ def analyze_symbol(symbol: str, recent_high_days: int = 20) -> TrendResult:
     trend_strength = above_sma20_pct + sma20_slope_pct
 
     is_above_sma20 = latest.close > sma20
-    is_shallow_pullback = 1.0 <= pullback_pct <= 3.0
-    return TrendResult(
+    band = pullback_band_label(pullback_pct, min_pullback_pct, max_pullback_pct)
+    is_shallow_pullback = band == "valid"
+    is_trend_strength_pass = trend_strength >= min_trend_pct
+    result = TrendResult(
         symbol=symbol.upper(),
         close=latest.close,
         sma20=sma20,
@@ -127,8 +178,11 @@ def analyze_symbol(symbol: str, recent_high_days: int = 20) -> TrendResult:
         trend_strength=trend_strength,
         is_above_sma20=is_above_sma20,
         is_shallow_pullback=is_shallow_pullback,
-        is_opportunity=is_above_sma20 and is_shallow_pullback,
+        is_trend_strength_pass=is_trend_strength_pass,
+        pullback_band=band,
+        is_opportunity=is_above_sma20 and is_shallow_pullback and is_trend_strength_pass,
     )
+    return TrendResult(**{**result.__dict__, "reason": build_reason(result)})
 
 
 def format_pct(value: float | None) -> str:
@@ -143,14 +197,25 @@ def format_money(value: float | None) -> str:
     return f"{float(value):.2f}"
 
 
+def yes_no(value: bool) -> str:
+    return "yes" if value else "no"
+
+
 def print_results(results: list[TrendResult]) -> None:
     print("Trend Opportunity Tracker - observation only, no trading logic")
     print()
-    print(f"{'Symbol':<8} {'Close':>10} {'SMA20':>10} {'Pullback':>10} {'Trend':>10} {'Status':<14}")
-    print("-" * 68)
+    print(
+        f"{'Symbol':<8} {'Close':>10} {'SMA20':>10} {'Pullback':>10} "
+        f"{'Trend':>10} {'Above20':>8} {'Band':<10} {'TrendOK':>8} {'Status':<10}"
+    )
+    print("-" * 94)
     for result in results:
         if result.error:
-            print(f"{result.symbol:<8} {'NA':>10} {'NA':>10} {'NA':>10} {'NA':>10} ERROR: {result.error}")
+            print(
+                f"{result.symbol:<8} {'NA':>10} {'NA':>10} {'NA':>10} "
+                f"{'NA':>10} {'no':>8} {'unknown':<10} {'no':>8} ERROR"
+            )
+            print(f"  {result.symbol} ERROR: {result.error}")
             continue
         status = "WATCH" if result.is_opportunity else "NO MATCH"
         print(
@@ -159,8 +224,12 @@ def print_results(results: list[TrendResult]) -> None:
             f"{format_money(result.sma20):>10} "
             f"{format_pct(result.pullback_pct):>10} "
             f"{format_pct(result.trend_strength):>10} "
-            f"{status:<14}"
+            f"{yes_no(result.is_above_sma20):>8} "
+            f"{result.pullback_band:<10} "
+            f"{yes_no(result.is_trend_strength_pass):>8} "
+            f"{status:<10}"
         )
+        print(f"  {result.symbol} {status}: {result.reason}")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -177,18 +246,48 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=20,
         help="Lookback window for recent high. Default: 20",
     )
+    parser.add_argument(
+        "--min-pullback-pct",
+        type=float,
+        default=1.0,
+        help="Minimum pullback percent for WATCH. Default: 1.0",
+    )
+    parser.add_argument(
+        "--max-pullback-pct",
+        type=float,
+        default=3.0,
+        help="Maximum pullback percent for WATCH. Default: 3.0",
+    )
+    parser.add_argument(
+        "--min-trend-pct",
+        type=float,
+        default=5.0,
+        help="Minimum trend strength percent for WATCH. Default: 5.0",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     recent_high_days = max(5, int(args.recent_high_days))
+    min_pullback_pct = max(0.0, float(args.min_pullback_pct))
+    max_pullback_pct = max(min_pullback_pct, float(args.max_pullback_pct))
+    min_trend_pct = float(args.min_trend_pct)
     symbols = [str(symbol).upper().strip() for symbol in args.symbols if str(symbol).strip()]
     if not symbols:
         print("No symbols supplied.", file=sys.stderr)
         return 2
 
-    results = [analyze_symbol(symbol, recent_high_days=recent_high_days) for symbol in symbols]
+    results = [
+        analyze_symbol(
+            symbol,
+            recent_high_days=recent_high_days,
+            min_pullback_pct=min_pullback_pct,
+            max_pullback_pct=max_pullback_pct,
+            min_trend_pct=min_trend_pct,
+        )
+        for symbol in symbols
+    ]
     print_results(results)
     return 1 if all(result.error for result in results) else 0
 
