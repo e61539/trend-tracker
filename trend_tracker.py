@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Observation-only trend opportunity tracker.
 
-Finds shallow pullbacks in symbols that remain above their 20-day moving average.
+Finds shallow pullbacks in symbols that remain above their 20-day and 50-day moving averages.
 This script does not place orders, size trades, or make execution decisions.
 """
 
@@ -34,10 +34,13 @@ class TrendResult:
     symbol: str
     close: float | None = None
     sma20: float | None = None
+    sma50: float | None = None
     recent_high: float | None = None
     pullback_pct: float | None = None
     trend_strength: float | None = None
     is_above_sma20: bool = False
+    is_above_sma50: bool = False
+    is_sma20_above_sma50: bool = False
     is_shallow_pullback: bool = False
     is_trend_strength_pass: bool = False
     pullback_band: str = "unknown"
@@ -89,7 +92,7 @@ def fetch_daily_bars(symbol: str, timeout_sec: int = 12) -> list[DailyBar]:
         date = datetime.fromtimestamp(int(timestamp)).strftime("%Y-%m-%d")
         bars.append(DailyBar(date=date, close=float(close), high=float(high)))
 
-    if len(bars) < 25:
+    if len(bars) < 50:
         raise RuntimeError(f"not enough daily bars ({len(bars)})")
     return bars
 
@@ -117,15 +120,23 @@ def build_reason(result: TrendResult) -> str:
 
     pullback = format_pct(result.pullback_pct)
     if result.is_opportunity:
-        return f"uptrend intact, shallow pullback {pullback}."
+        strength_note = "stronger trend confirmed" if result.is_sma20_above_sma50 else "SMA50 confirmation passes"
+        return f"uptrend intact, {strength_note}, shallow pullback {pullback}."
 
     reasons = []
-    if not result.is_above_sma20:
+    if not result.is_above_sma20 and not result.is_above_sma50:
+        reasons.append("below SMA20 and SMA50")
+    elif not result.is_above_sma20:
         reasons.append("below SMA20")
+    elif not result.is_above_sma50:
+        reasons.append("below SMA50")
     elif not result.is_trend_strength_pass:
         reasons.append("trend strength below threshold")
     else:
-        reasons.append("strong uptrend")
+        reasons.append("uptrend confirmed")
+
+    if result.is_above_sma20 and result.is_above_sma50 and result.is_sma20_above_sma50:
+        reasons.append("SMA20 is above SMA50")
 
     if result.pullback_band == "too small":
         reasons.append(f"but pullback only {pullback}, too close to high")
@@ -134,7 +145,7 @@ def build_reason(result: TrendResult) -> str:
     elif result.pullback_band == "valid":
         reasons.append(f"pullback {pullback} is valid")
 
-    if not result.is_above_sma20 and not result.is_trend_strength_pass:
+    if (not result.is_above_sma20 or not result.is_above_sma50) and not result.is_trend_strength_pass:
         reasons.append("trend is negative")
 
     sentence = ", ".join(reasons).strip()
@@ -156,6 +167,7 @@ def analyze_symbol(
     closes = [bar.close for bar in bars]
     latest = bars[-1]
     sma20 = average(closes[-20:])
+    sma50 = average(closes[-50:])
     prior_sma20 = average(closes[-40:-20]) if len(closes) >= 40 else average(closes[:-20])
     recent_window = bars[-recent_high_days:]
     recent_high = max(bar.high for bar in recent_window)
@@ -166,6 +178,8 @@ def analyze_symbol(
     trend_strength = above_sma20_pct + sma20_slope_pct
 
     is_above_sma20 = latest.close > sma20
+    is_above_sma50 = latest.close > sma50
+    is_sma20_above_sma50 = sma20 > sma50
     band = pullback_band_label(pullback_pct, min_pullback_pct, max_pullback_pct)
     is_shallow_pullback = band == "valid"
     is_trend_strength_pass = trend_strength >= min_trend_pct
@@ -173,14 +187,17 @@ def analyze_symbol(
         symbol=symbol.upper(),
         close=latest.close,
         sma20=sma20,
+        sma50=sma50,
         recent_high=recent_high,
         pullback_pct=pullback_pct,
         trend_strength=trend_strength,
         is_above_sma20=is_above_sma20,
+        is_above_sma50=is_above_sma50,
+        is_sma20_above_sma50=is_sma20_above_sma50,
         is_shallow_pullback=is_shallow_pullback,
         is_trend_strength_pass=is_trend_strength_pass,
         pullback_band=band,
-        is_opportunity=is_above_sma20 and is_shallow_pullback and is_trend_strength_pass,
+        is_opportunity=is_above_sma20 and is_above_sma50 and is_shallow_pullback and is_trend_strength_pass,
     )
     return TrendResult(**{**result.__dict__, "reason": build_reason(result)})
 
@@ -205,15 +222,15 @@ def print_results(results: list[TrendResult]) -> None:
     print("Trend Opportunity Tracker - observation only, no trading logic")
     print()
     print(
-        f"{'Symbol':<8} {'Close':>10} {'SMA20':>10} {'Pullback':>10} "
-        f"{'Trend':>10} {'Above20':>8} {'Band':<10} {'TrendOK':>8} {'Status':<10}"
+        f"{'Symbol':<8} {'Close':>10} {'SMA20':>10} {'SMA50':>10} {'Pullback':>10} "
+        f"{'Trend':>10} {'Above20':>8} {'Above50':>8} {'Band':<10} {'TrendOK':>8} {'Status':<10}"
     )
-    print("-" * 94)
+    print("-" * 113)
     for result in results:
         if result.error:
             print(
-                f"{result.symbol:<8} {'NA':>10} {'NA':>10} {'NA':>10} "
-                f"{'NA':>10} {'no':>8} {'unknown':<10} {'no':>8} ERROR"
+                f"{result.symbol:<8} {'NA':>10} {'NA':>10} {'NA':>10} {'NA':>10} "
+                f"{'NA':>10} {'no':>8} {'no':>8} {'unknown':<10} {'no':>8} ERROR"
             )
             print(f"  {result.symbol} ERROR: {result.error}")
             continue
@@ -222,9 +239,11 @@ def print_results(results: list[TrendResult]) -> None:
             f"{result.symbol:<8} "
             f"{format_money(result.close):>10} "
             f"{format_money(result.sma20):>10} "
+            f"{format_money(result.sma50):>10} "
             f"{format_pct(result.pullback_pct):>10} "
             f"{format_pct(result.trend_strength):>10} "
             f"{yes_no(result.is_above_sma20):>8} "
+            f"{yes_no(result.is_above_sma50):>8} "
             f"{result.pullback_band:<10} "
             f"{yes_no(result.is_trend_strength_pass):>8} "
             f"{status:<10}"
