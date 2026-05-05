@@ -233,6 +233,7 @@ def print_results(results: list[TrendResult]) -> None:
                 f"{'NA':>10} {'no':>8} {'no':>8} {'unknown':<10} {'no':>8} ERROR"
             )
             print(f"  {result.symbol} ERROR: {result.error}")
+            print()
             continue
         status = "WATCH" if result.is_opportunity else "NO MATCH"
         print(
@@ -249,6 +250,7 @@ def print_results(results: list[TrendResult]) -> None:
             f"{status:<10}"
         )
         print(f"  {result.symbol} {status}: {result.reason}")
+        print()
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
