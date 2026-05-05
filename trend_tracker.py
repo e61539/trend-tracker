@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Observation-only trend opportunity tracker.
 
-Finds shallow pullbacks in symbols that remain above their 20-day and 50-day moving averages.
+Finds shallow pullbacks in symbols with close above SMA20 and SMA20 above SMA50.
 This script does not place orders, size trades, or make execution decisions.
 """
 
@@ -39,10 +39,9 @@ class TrendResult:
     pullback_pct: float | None = None
     trend_strength: float | None = None
     is_above_sma20: bool = False
-    is_above_sma50: bool = False
     is_sma20_above_sma50: bool = False
     is_shallow_pullback: bool = False
-    is_trend_strength_pass: bool = False
+    is_trend_pass: bool = False
     pullback_band: str = "unknown"
     reason: str = ""
     is_opportunity: bool = False
@@ -120,22 +119,17 @@ def build_reason(result: TrendResult) -> str:
 
     pullback = format_pct(result.pullback_pct)
     if result.is_opportunity:
-        strength_note = "stronger trend confirmed" if result.is_sma20_above_sma50 else "SMA50 confirmation passes"
-        return f"uptrend intact, {strength_note}, shallow pullback {pullback}."
+        return f"uptrend intact, SMA20 is above SMA50, shallow pullback {pullback}."
 
     reasons = []
-    if not result.is_above_sma20 and not result.is_above_sma50:
-        reasons.append("below SMA20 and SMA50")
-    elif not result.is_above_sma20:
+    if not result.is_above_sma20:
         reasons.append("below SMA20")
-    elif not result.is_above_sma50:
-        reasons.append("below SMA50")
-    elif not result.is_trend_strength_pass:
-        reasons.append("trend strength below threshold")
+    elif not result.is_sma20_above_sma50:
+        reasons.append("SMA20 is not above SMA50")
     else:
         reasons.append("uptrend confirmed")
 
-    if result.is_above_sma20 and result.is_above_sma50 and result.is_sma20_above_sma50:
+    if result.is_trend_pass:
         reasons.append("SMA20 is above SMA50")
 
     if result.pullback_band == "too small":
@@ -145,7 +139,7 @@ def build_reason(result: TrendResult) -> str:
     elif result.pullback_band == "valid":
         reasons.append(f"pullback {pullback} is valid")
 
-    if (not result.is_above_sma20 or not result.is_above_sma50) and not result.is_trend_strength_pass:
+    if not result.is_trend_pass and result.trend_strength is not None and result.trend_strength < 0:
         reasons.append("trend is negative")
 
     sentence = ", ".join(reasons).strip()
@@ -157,7 +151,6 @@ def analyze_symbol(
     recent_high_days: int = 20,
     min_pullback_pct: float = 1.0,
     max_pullback_pct: float = 3.0,
-    min_trend_pct: float = 5.0,
 ) -> TrendResult:
     try:
         bars = fetch_daily_bars(symbol)
@@ -168,21 +161,17 @@ def analyze_symbol(
     latest = bars[-1]
     sma20 = average(closes[-20:])
     sma50 = average(closes[-50:])
-    prior_sma20 = average(closes[-40:-20]) if len(closes) >= 40 else average(closes[:-20])
     recent_window = bars[-recent_high_days:]
     recent_high = max(bar.close for bar in recent_window)
 
     pullback_pct = ((recent_high - latest.close) / recent_high) * 100.0 if recent_high > 0 else float("nan")
-    above_sma20_pct = ((latest.close - sma20) / sma20) * 100.0 if sma20 > 0 else float("nan")
-    sma20_slope_pct = ((sma20 - prior_sma20) / prior_sma20) * 100.0 if prior_sma20 > 0 else 0.0
-    trend_strength = above_sma20_pct + sma20_slope_pct
+    trend_pct = ((latest.close - sma20) / sma20) * 100.0 if sma20 > 0 else float("nan")
 
     is_above_sma20 = latest.close > sma20
-    is_above_sma50 = latest.close > sma50
     is_sma20_above_sma50 = sma20 > sma50
+    is_trend_pass = is_above_sma20 and is_sma20_above_sma50
     band = pullback_band_label(pullback_pct, min_pullback_pct, max_pullback_pct)
     is_shallow_pullback = band == "valid"
-    is_trend_strength_pass = trend_strength >= min_trend_pct
     result = TrendResult(
         symbol=symbol.upper(),
         close=latest.close,
@@ -190,14 +179,13 @@ def analyze_symbol(
         sma50=sma50,
         recent_high=recent_high,
         pullback_pct=pullback_pct,
-        trend_strength=trend_strength,
+        trend_strength=trend_pct,
         is_above_sma20=is_above_sma20,
-        is_above_sma50=is_above_sma50,
         is_sma20_above_sma50=is_sma20_above_sma50,
         is_shallow_pullback=is_shallow_pullback,
-        is_trend_strength_pass=is_trend_strength_pass,
+        is_trend_pass=is_trend_pass,
         pullback_band=band,
-        is_opportunity=is_above_sma20 and is_above_sma50 and is_shallow_pullback and is_trend_strength_pass,
+        is_opportunity=is_trend_pass and is_shallow_pullback,
     )
     return TrendResult(**{**result.__dict__, "reason": build_reason(result)})
 
@@ -223,7 +211,7 @@ def print_results(results: list[TrendResult]) -> None:
     print()
     print(
         f"{'Symbol':<8} {'Close':>10} {'SMA20':>10} {'SMA50':>10} {'RecentHigh':>10} "
-        f"{'Pullback':>10} {'Trend':>10} {'Above20':>8} {'Above50':>8} {'Band':<10} "
+        f"{'Pullback':>10} {'TrendPct':>10} {'Above20':>8} {'20>50':>8} {'Band':<10} "
         f"{'TrendOK':>8} {'Status':<10}"
     )
     print("-" * 125)
@@ -246,9 +234,9 @@ def print_results(results: list[TrendResult]) -> None:
             f"{format_pct(result.pullback_pct):>10} "
             f"{format_pct(result.trend_strength):>10} "
             f"{yes_no(result.is_above_sma20):>8} "
-            f"{yes_no(result.is_above_sma50):>8} "
+            f"{yes_no(result.is_sma20_above_sma50):>8} "
             f"{result.pullback_band:<10} "
-            f"{yes_no(result.is_trend_strength_pass):>8} "
+            f"{yes_no(result.is_trend_pass):>8} "
             f"{status:<10}"
         )
         print(f"  {result.symbol} {status}: {result.reason}")
@@ -285,7 +273,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--min-trend-pct",
         type=float,
         default=5.0,
-        help="Minimum trend strength percent for WATCH. Default: 5.0",
+        help="Accepted for compatibility; trend pass is Close>SMA20 and SMA20>SMA50.",
     )
     return parser.parse_args(argv)
 
@@ -295,7 +283,6 @@ def main(argv: list[str] | None = None) -> int:
     recent_high_days = max(5, int(args.recent_high_days))
     min_pullback_pct = max(0.0, float(args.min_pullback_pct))
     max_pullback_pct = max(min_pullback_pct, float(args.max_pullback_pct))
-    min_trend_pct = float(args.min_trend_pct)
     symbols = [str(symbol).upper().strip() for symbol in args.symbols if str(symbol).strip()]
     if not symbols:
         print("No symbols supplied.", file=sys.stderr)
@@ -307,7 +294,6 @@ def main(argv: list[str] | None = None) -> int:
             recent_high_days=recent_high_days,
             min_pullback_pct=min_pullback_pct,
             max_pullback_pct=max_pullback_pct,
-            min_trend_pct=min_trend_pct,
         )
         for symbol in symbols
     ]
