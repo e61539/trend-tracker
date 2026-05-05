@@ -170,7 +170,7 @@ def analyze_symbol(
     sma50 = average(closes[-50:])
     prior_sma20 = average(closes[-40:-20]) if len(closes) >= 40 else average(closes[:-20])
     recent_window = bars[-recent_high_days:]
-    recent_high = max(bar.high for bar in recent_window)
+    recent_high = max(bar.close for bar in recent_window)
 
     pullback_pct = ((recent_high - latest.close) / recent_high) * 100.0 if recent_high > 0 else float("nan")
     above_sma20_pct = ((latest.close - sma20) / sma20) * 100.0 if sma20 > 0 else float("nan")
@@ -222,15 +222,16 @@ def print_results(results: list[TrendResult]) -> None:
     print("Trend Opportunity Tracker - observation only, no trading logic")
     print()
     print(
-        f"{'Symbol':<8} {'Close':>10} {'SMA20':>10} {'SMA50':>10} {'Pullback':>10} "
-        f"{'Trend':>10} {'Above20':>8} {'Above50':>8} {'Band':<10} {'TrendOK':>8} {'Status':<10}"
+        f"{'Symbol':<8} {'Close':>10} {'SMA20':>10} {'SMA50':>10} {'RecentHigh':>10} "
+        f"{'Pullback':>10} {'Trend':>10} {'Above20':>8} {'Above50':>8} {'Band':<10} "
+        f"{'TrendOK':>8} {'Status':<10}"
     )
-    print("-" * 113)
+    print("-" * 125)
     for result in results:
         if result.error:
             print(
                 f"{result.symbol:<8} {'NA':>10} {'NA':>10} {'NA':>10} {'NA':>10} "
-                f"{'NA':>10} {'no':>8} {'no':>8} {'unknown':<10} {'no':>8} ERROR"
+                f"{'NA':>10} {'NA':>10} {'no':>8} {'no':>8} {'unknown':<10} {'no':>8} ERROR"
             )
             print(f"  {result.symbol} ERROR: {result.error}")
             print()
@@ -241,6 +242,7 @@ def print_results(results: list[TrendResult]) -> None:
             f"{format_money(result.close):>10} "
             f"{format_money(result.sma20):>10} "
             f"{format_money(result.sma50):>10} "
+            f"{format_money(result.recent_high):>10} "
             f"{format_pct(result.pullback_pct):>10} "
             f"{format_pct(result.trend_strength):>10} "
             f"{yes_no(result.is_above_sma20):>8} "
